@@ -1,0 +1,11 @@
+# 本地模拟 DNS 覆盖（仅用于 docker-compose.rebind-a.yml 的演示环境）。
+#
+# 代理把这里的 receiver-a 解析结果当作 DNS 答案，每次后台查询都会重新读取本文件。
+# 当前状态：
+#   receiver-a → 172.28.0.10（原接收器 A）
+#   receiver-b → 172.28.0.12
+#
+# 演示“A 换 IPv4”：把第一行改成下面的内容并保存，代理下一轮后台查询即感知：
+#   172.28.0.11 receiver-a
+172.28.0.10 receiver-a
+172.28.0.12 receiver-b

@@ -1,0 +1,61 @@
+# 演示“接收器 A 保留服务名、换 IPv4 重建、延迟就绪”。
+#
+#   docker compose -f docker-compose.yml -f docker-compose.rebind-a.yml up --build -d
+#   # 需要演示时再单独启动“重建后的 A”：
+#   docker compose -f docker-compose.yml -f docker-compose.rebind-a.yml up -d receiver-a2
+#
+# - telemetry 网络固定子网，接收器 A 原地址 172.28.0.10，重建实例 receiver-a2 为 172.28.0.11，
+#   业务服务名都保持 receiver-a（容器名/服务名不变，IPv4 变化）。
+# - 代理读取挂载的本地 hosts 覆盖文件 scripts/rebind-a/hosts（容器内 /config/hosts，
+#   每次后台查询重新读取），在宿主机执行下面命令即可模拟“DNS 已更新”：
+#       cp scripts/rebind-a/hosts-standby scripts/rebind-a/hosts
+#   代理下一轮查询就会感知 receiver-a → 172.28.0.11，并为活动会话自动改绑到 receiver-a2；
+#   receiver-a2 的 READY_DELAY 从它自己启动时算起，所以先启动它、再复制 hosts，
+#   就能看到“新实例尚未就绪 → 原通道照常收发 → 就绪后自动交接”的完整过程。
+#
+# 完整演示步骤见 README 的“本机演示：A 保留服务名换 IP”。
+services:
+  receiver-a:
+    environment:
+      READY_DELAY: "0"
+    networks:
+      telemetry:
+        ipv4_address: 172.28.0.10
+
+  receiver-b:
+    networks:
+      telemetry:
+        ipv4_address: 172.28.0.12
+
+  receiver-a2:
+    build: ./receiver
+    container_name: telemetry-receiver-a2
+    profiles: ["rebind"]            # 默认不启动，演示时用 up -d receiver-a2 启动
+    environment:
+      RECEIVER_NAME: A              # 同名实例：名称与 A 相同，实例编号每次启动都不同
+      LISTEN_PORT: "9001"
+      HTTP_PORT: "9002"
+      READY_DELAY: "8"              # 新实例启动后再过 8 秒才报告就绪，便于观察“等待确认”
+      REPLY_DELAY: "0"
+    networks:
+      telemetry:
+        ipv4_address: 172.28.0.11
+
+  proxy:
+    environment:
+      RECEIVER_A_HOST: receiver-a
+      RECEIVER_A_READY_PORT: "9002"
+      RESOLVER_HOSTS_FILE: /config/hosts
+      REBIND_HOLD: "1"
+      RETIRED_LINGER: "30"
+    volumes:
+      # 只挂目录：宿主机上替换 scripts/rebind-a/hosts 内容即可被代理重新读取
+      - ./scripts/rebind-a:/config:ro
+    depends_on:
+      - receiver-a
+
+networks:
+  telemetry:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

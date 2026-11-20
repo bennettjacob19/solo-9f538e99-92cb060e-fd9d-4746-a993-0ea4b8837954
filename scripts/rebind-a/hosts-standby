@@ -1,0 +1,6 @@
+# 换址后的 DNS 内容（备用）。演示时在宿主机执行：
+#   cp scripts/rebind-a/hosts-standby scripts/rebind-a/hosts
+# 代理下一轮后台查询就会看到 receiver-a → 172.28.0.11（receiver-a2 的新 IPv4），
+# 并开始为活动会话改绑；receiver-a2 的 READY_DELAY=5 让“等待确认就绪”阶段可观察。
+172.28.0.11 receiver-a
+172.28.0.12 receiver-b

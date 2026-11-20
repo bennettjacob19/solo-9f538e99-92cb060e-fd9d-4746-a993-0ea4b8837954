@@ -8,7 +8,7 @@
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-         margin: 0 auto; max-width: 1080px; padding: 16px; line-height: 1.5; }
+         margin: 0 auto; max-width: 1180px; padding: 16px; line-height: 1.5; }
   h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-bottom: 8px; }
   .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
   .card { border: 1px solid #8885; border-radius: 8px; padding: 10px 16px; min-width: 150px; }
@@ -26,10 +26,17 @@
            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
   th { opacity: .7; }
   .hint { font-size: .8rem; opacity: .7; margin: 6px 0 0; }
-  .result-ok { color: #2e7d32; } .result-err { color: #c62828; }
+  .result-ok { color: #2e7d32; } .result-err { color: #c62828; } .result-warn { color: #b26a00; }
   form .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
   label { font-size: .85rem; }
   code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: .88rem; }
+  .kv .k { opacity: .65; }
+  .badge { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: .75rem;
+           border: 1px solid #8888; }
+  .badge.ok { border-color: #2e7d32; color: #2e7d32; }
+  .badge.err { border-color: #c62828; color: #c62828; }
+  .badge.warn { border-color: #b26a00; color: #b26a00; }
 </style>
 </head>
 <body>
@@ -38,8 +45,6 @@
 <div class="cards">
   <div class="card"><div class="label">当前目标接收器（新会话）</div>
     <div class="big" id="target">{{ target }}</div></div>
-  <div class="card"><div class="label">接收器 A</div><div class="big" style="font-size:1rem">{{ receivers["A"] }}</div></div>
-  <div class="card"><div class="label">接收器 B</div><div class="big" style="font-size:1rem">{{ receivers["B"] }}</div></div>
   <div class="card"><div class="label">会话空闲超时</div><div class="big" style="font-size:1rem">{{ idle_timeout }} s</div></div>
   <div class="card"><div class="label">终端发送地址（UDP）</div><div class="big" style="font-size:1rem">本机 :{{ udp_listen_port }}</div></div>
 </div>
@@ -49,12 +54,24 @@
 {% endwith %}
 
 <section>
+  <h2>接收器（DNS 名 → 当前上游 IPv4 / 就绪实例）</h2>
+  <table>
+    <thead><tr><th>接收器</th><th>服务名(DNS)</th><th>当前 IPv4</th><th>代次</th>
+      <th>就绪实例</th><th>就绪状态</th><th>活动会话</th><th>解析信息</th></tr></thead>
+    <tbody id="groups"><tr><td colspan="8">加载中…</td></tr></tbody>
+  </table>
+  <p class="hint">每个接收器的 DNS 由后台共享查询，每次只采用一个 IPv4。解析失败时保留上一次成功地址并自动重试；
+    地址变化后活动会话自动改绑：先建新 UDP 通道，再从候选 IP 确认同名实例就绪，才交接。</p>
+</section>
+
+<section>
   <h2>切换目标接收器</h2>
   <form method="post" action="{{ url_for('switch') }}">
     <button type="submit" name="target" value="A" {% if target == "A" %}disabled{% endif %}>切换到 A</button>
     <button type="submit" name="target" value="B" {% if target == "B" %}disabled{% endif %}>切换到 B</button>
   </form>
-  <p class="hint">切换只影响之后新建的会话；已存在的会话继续走原接收器，直到空闲 {{ idle_timeout }} 秒过期。保存失败时保留原目标。</p>
+  <p class="hint">切换只影响之后新建的会话。已建立会话保留原会话编号，继续走原接收器；
+    原接收器同名换 IP 时，会话在 A 的新地址上恢复原来的收发。</p>
 </section>
 
 <section>
@@ -64,21 +81,41 @@
       <label>报文 <input name="payload" value="PING" size="24"></label>
       <label>回包延迟(秒) <input name="delay" type="number" min="0" step="0.5" value="0" style="width:70px"></label>
       <label>等待超时(秒) <input name="wait" type="number" min="1" max="60" value="10" style="width:70px"></label>
-      <label>固定客户端端口 <input name="client_port" type="number" min="1" max="65535" placeholder="留空=随机" style="width:110px"></label>
+      <label>客户端端口 <input name="client_port" id="client_port" type="number" min="1" max="65535"
+             placeholder="留空=随机" style="width:120px"></label>
       <button type="submit">发送</button>
+      <button type="button" id="retry_btn" title="用原客户端端口再试传一次">用原端口重试</button>
     </div>
-    <p class="hint">不填端口时每次试传都用新端口（总是新会话）。填同一端口可观察：空闲 {{ idle_timeout }} 秒内复用旧会话（仍走旧接收器）；超时后同端口重建会话，也收不到旧会话迟到的回包。</p>
+    <p class="hint">填同一客户端端口：空闲 {{ idle_timeout }} 秒内复用原会话（保留编号、仍走原接收器）；
+      超时后同端口会重建新会话，收不到旧会话迟到的回包。改绑后仍用原端口发送，可在 A 的新地址继续收发。</p>
   </form>
   {% if last_test %}
-  <div class="card" style="margin-top:10px">
+  <div class="card" style="margin-top:10px; display:block">
     <div class="label">最近一次试传（{{ last_test.time }}）</div>
-    <div>客户端 <code>{{ last_test.client }}</code> → 实际去向接收器
-      <b>{{ last_test.receiver or "?" }}</b>，报文 <code>{{ last_test.payload }}</code></div>
-    {% if last_test.ok %}
-      <div class="result-ok">收到回包：<code>{{ last_test.reply }}</code>（RTT {{ last_test.rtt }}s）</div>
-    {% else %}
-      <div class="result-err">{{ last_test.error }}</div>
-    {% endif %}
+    <div class="kv" style="margin-top:6px">
+      <span class="k">客户端</span><span><code>{{ last_test.client or "?" }}</code></span>
+      <span class="k">会话编号</span><span><b id="lt_session">{{ last_test.session_id if last_test.session_id is not none else "?" }}</b></span>
+      <span class="k">实际去向接收器</span><span><b>{{ last_test.receiver or "?" }}</b></span>
+      <span class="k">实际上游 IP</span><span><code>{{ last_test.upstream or last_test.upstream_ip or "?" }}</code></span>
+      <span class="k">已确认实例</span><span><code>{{ last_test.instance or "未校验" }}</code></span>
+      <span class="k">报文</span><span><code>{{ last_test.payload }}</code></span>
+      <span class="k">回包</span><span>
+        {% if last_test.ok %}<span class="result-ok"><code>{{ last_test.reply }}</code>（RTT {{ last_test.rtt }}s）</span>
+        {% else %}<span class="result-err">{{ last_test.error }}</span>{% endif %}
+      </span>
+      <span class="k">改绑状态</span><span>
+        {% set rs = last_test.rebind_state or "idle" %}
+        {% if rs == "done" %}<span class="badge ok">已完成</span>
+        {% elif rs == "retrying" %}<span class="badge err">重试中（{{ last_test.rebind_attempts }} 次）</span>
+        {% elif rs == "preparing" %}<span class="badge warn">准备中</span>
+        {% else %}<span class="badge">无</span>{% endif %}
+      </span>
+      <span class="k">改绑失败原因</span><span>
+        {% if last_test.rebind_error %}<span class="result-err">{{ last_test.rebind_error }}</span>
+        {% elif last_test.last_rebind_error %}<span class="result-warn">{{ last_test.last_rebind_error }}</span>
+        {% else %}<span class="hint">无</span>{% endif %}
+      </span>
+    </div>
   </div>
   {% endif %}
 </section>
@@ -86,37 +123,96 @@
 <section>
   <h2>活动会话 <span class="hint">（每 2 秒自动刷新）</span></h2>
   <table>
-    <thead><tr><th>ID</th><th>客户端</th><th>固定接收器</th><th>上游端口</th><th>状态</th><th>空闲(s)</th><th>存活(s)</th></tr></thead>
-    <tbody id="sessions"><tr><td colspan="7">加载中…</td></tr></tbody>
+    <thead><tr><th>会话编号</th><th>客户端</th><th>固定接收器</th><th>实际上游 IP</th>
+      <th>已确认实例</th><th>状态</th><th>改绑</th><th>失败原因</th><th>空闲(s)</th><th>存活(s)</th></tr></thead>
+    <tbody id="sessions"><tr><td colspan="10">加载中…</td></tr></tbody>
   </table>
+  <p class="hint">改绑期间原通道照常收发；只有新通道建好、候选 IP 同名实例确认就绪且 DNS 未再换址才交接。
+    接管后旧通道迟到回包一律丢弃，已发送报文不重发，会话编号保持不变。</p>
 </section>
 
 <section>
   <h2>报文日志（实际去向与回包） <span class="hint">（最近 100 条，每 2 秒自动刷新）</span></h2>
   <table>
-    <thead><tr><th>#</th><th>时间</th><th>客户端</th><th>会话</th><th>方向</th><th>接收器</th><th>报文内容</th><th>备注</th></tr></thead>
-    <tbody id="messages"><tr><td colspan="8">加载中…</td></tr></tbody>
+    <thead><tr><th>#</th><th>时间</th><th>客户端</th><th>会话</th><th>方向</th><th>接收器</th>
+      <th>上游 IP:端口</th><th>实例</th><th>报文内容</th><th>备注</th></tr></thead>
+    <tbody id="messages"><tr><td colspan="10">加载中…</td></tr></tbody>
   </table>
 </section>
 
 <script>
 function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function badge(state) {
+  const map = { done: ['ok', '已完成'], retrying: ['err', '重试中'], preparing: ['warn', '准备中'],
+                idle: ['', '无'] };
+  const [cls, text] = map[state] || ['', state || '无'];
+  return `<span class="badge ${cls}">${esc(text)}</span>`;
+}
+function readyBadge(g) {
+  const r = g.ready;
+  if (!r) return '<span class="badge">未查询</span>';
+  if (r.error) return `<span class="badge err" title="${esc(r.error)}">不可达</span>`;
+  if (r.ready) return '<span class="badge ok">就绪</span>';
+  return `<span class="badge warn">${esc(r.state || '未就绪')}</span>`;
+}
 async function refresh() {
   try {
     const s = await (await fetch('/api/state')).json();
     document.getElementById('target').textContent = s.target;
+    const gs = (s.groups || []).map(g => {
+      const r = g.ready || {};
+      const inst = r.instance ? `<code>${esc(r.instance)}</code>` : (r.ip ? `<span class="hint">${esc(r.ip)}</span>` : '');
+      let info = '';
+      if (g.resolve_error) info = `<span class="result-err">${esc(g.resolve_error)}</span>`;
+      else if (g.last_resolved) info = `成功 ${esc(g.last_resolved)}`;
+      return `<tr><td><b>${esc(g.name)}</b></td><td>${esc(g.host)}:${g.port}</td>` +
+        `<td><b>${esc(g.current_ip || '解析中')}</b></td><td>${g.generation}</td>` +
+        `<td>${inst}</td><td>${readyBadge(g)}</td><td>${g.session_count}</td><td>${info}</td></tr>`;
+    });
+    document.getElementById('groups').innerHTML =
+      gs.join('') || '<tr><td colspan="8">（无）</td></tr>';
     const ss = s.sessions.map(x =>
       `<tr><td>${x.id}</td><td>${esc(x.client)}</td><td><b>${esc(x.receiver)}</b></td>` +
-      `<td>${x.upstream_port ?? ''}</td><td>${esc(x.state)}</td><td>${x.idle}</td><td>${x.age}</td></tr>`);
+      `<td><code>${esc(x.upstream_ip || '')}</code></td>` +
+      `<td>${x.instance ? `<code>${esc(x.instance)}</code>` : '<span class="hint">未校验</span>'}</td>` +
+      `<td>${esc(x.state)}${x.open_error ? `<div class="result-warn hint">${esc(x.open_error)}</div>` : ''}</td>` +
+      `<td>${badge(x.rebind_state)}${x.rebind_attempts ? ` <span class="hint">${x.rebind_attempts}次</span>` : ''}</td>` +
+      `<td>${esc(x.rebind_error || x.last_rebind_error || '')}</td>` +
+      `<td>${x.idle}</td><td>${x.age}</td></tr>`);
     document.getElementById('sessions').innerHTML =
-      ss.join('') || '<tr><td colspan="7">（无活动会话）</td></tr>';
+      ss.join('') || '<tr><td colspan="10">（无活动会话）</td></tr>';
     const ms = s.messages.map(m =>
       `<tr><td>${m.id}</td><td>${esc(m.ts)}</td><td>${esc(m.client)}</td><td>${m.session_id || ''}</td>` +
-      `<td>${esc(m.direction)}</td><td>${esc(m.receiver)}</td><td>${esc(m.payload)}</td><td>${esc(m.note)}</td></tr>`);
+      `<td>${esc(m.direction)}</td><td>${esc(m.receiver)}</td><td><code>${esc(m.upstream || '')}</code></td>` +
+      `<td>${esc(m.instance || '')}</td><td>${esc(m.payload)}</td><td>${esc(m.note)}</td></tr>`);
     document.getElementById('messages').innerHTML =
-      ms.join('') || '<tr><td colspan="8">（暂无日志）</td></tr>';
+      ms.join('') || '<tr><td colspan="10">（暂无日志）</td></tr>';
+    if (s.last_test && s.last_test.client_port) {
+      const cp = document.getElementById('client_port');
+      if (!cp.value) cp.placeholder = `留空=随机（上次 ${s.last_test.client_port}）`;
+      const rb = document.getElementById('retry_btn');
+      if (rb && !rb.dataset.port) rb.dataset.port = s.last_test.client_port;
+    }
   } catch (e) { /* 下次再试 */ }
 }
+document.getElementById('retry_btn').addEventListener('click', async () => {
+  const btn = document.getElementById('retry_btn');
+  const input = document.getElementById('client_port');
+  const port = input.value || btn.dataset.port;
+  if (!port) { alert('还没有可复用的客户端端口，请先发送一次试传。'); return; }
+  const form = btn.closest('form');
+  const body = new URLSearchParams({
+    payload: form.querySelector('[name=payload]').value,
+    delay: form.querySelector('[name=delay]').value,
+    wait: form.querySelector('[name=wait]').value,
+    client_port: port,
+  });
+  btn.disabled = true;
+  try {
+    await fetch('/test', { method: 'POST', body, headers: {'Content-Type': 'application/x-www-form-urlencoded'} });
+    location.reload();
+  } finally { btn.disabled = false; }
+});
 refresh();
 setInterval(refresh, 2000);
 </script>

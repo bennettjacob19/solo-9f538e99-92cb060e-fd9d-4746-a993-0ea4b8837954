@@ -1,11 +1,14 @@
 services:
+  # 接收器 A：DNS 服务名固定为 receiver-a，重建换 IPv4 时服务名不变。
   receiver-a:
     build: ./receiver
     container_name: telemetry-receiver-a
     environment:
       RECEIVER_NAME: A
       LISTEN_PORT: "9001"
-      REPLY_DELAY: "0"          # 默认回包延迟（秒）；报文 "DELAY:<秒>:" 可单次覆盖
+      HTTP_PORT: "9002"          # 内部就绪接口（/readyz），报告名称与实例编号
+      READY_DELAY: "0"           # UDP 能收业务报文后再延迟多久才报告就绪
+      REPLY_DELAY: "0"           # 默认回包延迟（秒）；报文 "DELAY:<秒>:" 可单次覆盖
     networks: [telemetry]
 
   receiver-b:
@@ -14,6 +17,8 @@ services:
     environment:
       RECEIVER_NAME: B
       LISTEN_PORT: "9001"
+      HTTP_PORT: "9002"
+      READY_DELAY: "0"
       REPLY_DELAY: "0"
     networks: [telemetry]
 
@@ -24,10 +29,15 @@ services:
       UDP_LISTEN_PORT: "9000"
       HTTP_PORT: "8080"
       SESSION_IDLE_TIMEOUT: "5"          # 会话空闲超时（秒）
-      RECEIVER_A_HOST: receiver-a
+      RECEIVER_A_HOST: receiver-a       # DNS 服务名；换 IPv4 时保持不变
       RECEIVER_A_PORT: "9001"
+      RECEIVER_A_READY_PORT: "9002"     # 内部就绪接口
       RECEIVER_B_HOST: receiver-b
       RECEIVER_B_PORT: "9001"
+      RECEIVER_B_READY_PORT: "9002"
+      DNS_POLL_INTERVAL: "2"             # 每个接收器共用一个后台 DNS 查询
+      REBIND_HOLD: "1"                   # 接管前稳定观察窗口（秒）
+      RETIRED_LINGER: "30"               # 接管后旧通道观察期（丢弃迟到回包）
       DB_PATH: /data/proxy.db            # 目标接收器持久化（重启保留）
       # UPSTREAM_PORT_COOLDOWN: "30"     # 上游端口冷却，须大于最大回包延迟
     ports:
